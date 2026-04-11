@@ -11,8 +11,28 @@ New additions over V2:
 """
 
 from __future__ import annotations
+from enum import IntEnum
 from typing import Optional, Any
 from pydantic import BaseModel, Field
+
+try:
+    from openenv.core import Environment as OpenEnvBase
+except ImportError:
+    # Graceful fallback if openenv-core is not installed in the validator context
+    OpenEnvBase = object
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ESI LEVEL ENUM  (Fix: explicit type-safe enum for triage levels)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ESILevel(IntEnum):
+    """Emergency Severity Index levels used worldwide in ED triage."""
+    IMMEDIATE   = 1  # Life-threatening — requires instant intervention
+    EMERGENT    = 2  # High risk — should not wait
+    URGENT      = 3  # Stable but needs multiple resources
+    LESS_URGENT = 4  # Needs one resource only
+    NON_URGENT  = 5  # No resources needed
 
 
 # ─────────────────────────────────────────────────────────────────────────────

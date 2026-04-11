@@ -1,10 +1,13 @@
 """
-FastAPI server for the Medical Triage OpenEnv environment.
+FastAPI server for the Medical Triage OpenEnv environment — V6.
 Endpoints: POST /reset, POST /step, GET /state, GET /tasks, POST /grader, GET /baseline
 
-FIX (Bug 1): env is now instantiated per-WebSocket connection, not as a module-level
-singleton. The previous global `env` caused a race condition: concurrent WebSocket
-clients shared the same episode state and corrupted each other's resets and steps.
+V6 changes:
+  - environment.py replaces triage_environment.py (OpenEnv spec compliance)
+  - All HTTP endpoints are now async (Fix 7)
+  - /state returns richer metadata for score variance tracking (Fix 13)
+  - Mass casualty task wired through ResetRequest hospital_config (Fix 8)
+  - Per-connection env isolation retained from V5 (race-condition fix)
 """
 
 import os
@@ -24,17 +27,17 @@ from models import (
     TriageAction,
 )
 from .patients import PATIENT_MAP, DEPARTMENTS
-from .triage_environment import MedicalTriageEnvironment, score_triage
+from .environment import MedicalTriageEnvironment, score_triage
 
 app = FastAPI(
-    title="Medical Triage — OpenEnv",
+    title="Medical Triage — OpenEnv V6",
     description=(
         "An OpenEnv-compliant RL environment where AI agents learn to triage patients "
         "using the Emergency Severity Index (ESI). Agents assess patient presentations, "
-        "assign ESI levels (1–5), and recommend departments. Graders use clinical "
-        "protocols with asymmetric undertriage penalties."
+        "assign ESI levels (1–5), recommend departments, and allocate hospital resources. "
+        "Graders use a multi-objective V3 reward formula with asymmetric undertriage penalties."
     ),
-    version="1.0.0",
+    version="6.0.0",
 )
 
 app.add_middleware(
@@ -44,22 +47,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── FIX (Bug 1): Removed module-level `env = MedicalTriageEnvironment()`.
-# A single global env was shared across all WebSocket connections, causing
-# race conditions when multiple clients reset or stepped concurrently.
-# Each WebSocket connection now gets its own isolated env instance (see below).
-
-# The HTTP endpoints (/reset, /step, /state) still need a shared env for
-# stateful HTTP sessions. If you need concurrent HTTP sessions too, switch to
-# a session-keyed dict. For now, one env for HTTP is acceptable for single-user use.
+# HTTP endpoints share one env instance (single-user HTTP sessions).
+# WebSocket connections each get their own isolated instance (see /ws below).
 _http_env = MedicalTriageEnvironment()
+
+# Mass casualty task config — wired through hospital_config override
+MASS_CASUALTY_CONFIG = {
+    "task_id": "mass_casualty",
+    "num_patients": 5,
+    "use_procedural": True,
+    "hospital_config": {
+        "icu_beds": 2,
+        "er_beds": 4,
+        "resus_bays": 1,
+        "doctors_available": 2,
+        "nurses_available": 3,
+    },
+}
 
 
 @app.get("/")
-def root():
+async def root():
     return {
         "name": "Medical Triage OpenEnv",
-        "version": "1.0.0",
+        "version": "6.0.0",
         "description": "RL environment for ESI-based medical triage.",
         "endpoints": ["/reset", "/step", "/state", "/tasks", "/grader", "/baseline"],
         "esi_scale": {
@@ -71,95 +82,79 @@ def root():
 
 
 @app.post("/reset", response_model=ResetResponse)
-def reset(request: ResetRequest = None):
-    """Start a new episode with a random patient from the specified difficulty pool.
+async def reset(request: ResetRequest = None):
+    """
+    Start a new episode. Pass task_id: easy | medium | hard | mass_casualty.
 
-    V5: use_procedural defaults to False. Pass use_procedural=true to enable
-    procedural generation for easy/medium tasks. Hard tasks always use curated
-    cases regardless of this flag (preserves difficulty variance).
+    V6: mass_casualty task spawns 5 patients with reduced hospital capacity
+    (2 ICU beds, 4 ER beds, 2 doctors). Tests prioritisation under resource pressure.
+    use_procedural defaults to False. Hard tasks always use curated cases.
     """
     if request is None:
         request = ResetRequest(use_procedural=False)
-    # V5 fix: removed forced override of use_procedural=True
+
+    # Wire mass_casualty through hospital_config
+    if request.task_id == "mass_casualty":
+        request = ResetRequest(
+            task_id="hard",
+            num_patients=MASS_CASUALTY_CONFIG["num_patients"],
+            use_procedural=MASS_CASUALTY_CONFIG["use_procedural"],
+            hospital_config=MASS_CASUALTY_CONFIG["hospital_config"],
+        )
+
     obs = _http_env.reset(request=request)
     return ResetResponse(observation=obs)
 
 
 @app.post("/step", response_model=StepResponse)
-def step(request: StepRequest):
+async def step(request: StepRequest):
     """Submit a triage decision (ESI level + department) and receive reward."""
     obs, reward, done, info = _http_env.step(request.action)
     return StepResponse(observation=obs, reward=reward, done=done, info=info)
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """
-    Persistent WebSocket endpoint for the environment.
-
-    FIX (Bug 1): Each connection gets its own MedicalTriageEnvironment instance.
-    This prevents concurrent clients from trampling each other's episode state.
-    """
-    await websocket.accept()
-
-    # ── Per-connection environment ─────────────────────────────────────────────
-    env = MedicalTriageEnvironment()  # isolated per connection
-
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            msg_type = message.get("type")
-
-            if msg_type == "reset":
-                task_id = message.get("task_id", "easy")
-                use_procedural = message.get("use_procedural", False)  # V5: default False
-                request = ResetRequest(
-                    task_id=task_id,
-                    use_procedural=use_procedural,
-                    num_patients=1,
-                )
-                obs = env.reset(request=request)
-                await websocket.send_text(json.dumps({"observation": obs.model_dump()}))
-
-            elif msg_type == "step":
-                action_data = message.get("action", {})
-                action = TriageAction(**action_data)
-                obs, reward, done, info = env.step(action)
-                await websocket.send_text(json.dumps({
-                    "observation": obs.model_dump(),
-                    "reward": reward.model_dump(),
-                    "done": done,
-                    "info": info,
-                }))
-
-            else:
-                await websocket.send_text(json.dumps({"error": "Unknown message type"}))
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_text(json.dumps({"error": str(e)}))
-            await websocket.close()
-        except Exception:
-            pass  # connection may already be gone
-
-
 @app.get("/state", response_model=StateResponse)
-def state():
-    """Return current episode metadata."""
+async def state():
+    """
+    Return current episode metadata.
+    Includes episode_id, task_id, patient_id, step, done, best_score.
+    Use this to track score variance across runs.
+    """
     return StateResponse(state=_http_env.state())
 
 
 @app.get("/tasks")
-def get_tasks():
-    """List all tasks with action schema."""
-    return {"tasks": [t.model_dump() for t in _http_env.get_tasks()]}
+async def get_tasks():
+    """List all tasks with action schema. Includes mass_casualty task (V6)."""
+    base_tasks = [t.model_dump() for t in _http_env.get_tasks()]
+
+    # Append mass_casualty task definition
+    mass_casualty_task = {
+        "task_id": "mass_casualty",
+        "name": "Mass Casualty Incident",
+        "difficulty": "hard",
+        "description": (
+            "5 simultaneous patients arrive with mixed acuity. "
+            "Hospital running at reduced capacity: 2 ICU beds, 4 ER beds, 2 doctors available. "
+            "Agent must triage and route all patients under resource pressure."
+        ),
+        "expected_score_range": [0.50, 0.75],
+        "pass_threshold": 0.55,
+        "num_patients": 5,
+        "action_schema": {
+            "esi_level": {"type": "integer", "minimum": 1, "maximum": 5},
+            "department": {"type": "string", "enum": DEPARTMENTS},
+            "routing_decision": {"type": "string", "enum": ["admit", "wait", "reroute"]},
+            "resource_request": {"type": "object"},
+            "reasoning": {"type": "string"},
+        },
+    }
+    base_tasks.append(mass_casualty_task)
+    return {"tasks": base_tasks}
 
 
 @app.post("/grader", response_model=GraderResponse)
-def grader(request: GraderRequest):
+async def grader(request: GraderRequest):
     """
     Standalone grader. Score a triage decision for a specific patient
     without affecting the running episode.
@@ -175,6 +170,7 @@ def grader(request: GraderRequest):
         patient_id=request.patient_id,
         esi_score=reward.esi_score,
         department_score=reward.department_score,
+        resource_score=getattr(reward, "resource_score", 1.0),
         total_score=total,
         feedback=feedback,
         correct_esi=patient["correct_esi"],
@@ -183,11 +179,11 @@ def grader(request: GraderRequest):
 
 
 @app.get("/baseline")
-def baseline():
+async def baseline():
     """
-    Rule-based baseline agent on all 3 difficulty tasks.
-    Uses one representative patient per difficulty level.
+    Rule-based baseline on all 3 standard difficulty tasks.
     Returns reproducible scores for hackathon submission.
+    Documented variance: ±0.05 due to random patient selection per reset.
     """
     baseline_cases = {
         "easy":   ("easy_001",   2, "Emergency"),
@@ -203,23 +199,90 @@ def baseline():
         action  = TriageAction(esi_level=esi, department=dept)
         score, reward, feedback = score_triage(patient, action)
         results[difficulty] = {
-            "patient_id":        patient_id,
-            "submitted_esi":     esi,
-            "submitted_dept":    dept,
-            "correct_esi":       patient["correct_esi"],
-            "correct_dept":      patient["correct_department"],
-            "esi_score":         reward.esi_score,
-            "department_score":  reward.department_score,
-            "total_score":       score,
-            "feedback":          feedback,
+            "patient_id":       patient_id,
+            "submitted_esi":    esi,
+            "submitted_dept":   dept,
+            "correct_esi":      patient["correct_esi"],
+            "correct_dept":     patient["correct_department"],
+            "esi_score":        reward.esi_score,
+            "department_score": reward.department_score,
+            "total_score":      score,
+            "feedback":         feedback,
         }
         total += score
 
     return {
         "agent":         "rule_based_baseline",
+        "version":       "V6",
         "average_score": round(total / len(results), 3),
         "task_scores":   results,
+        "note": (
+            "Scores reflect fixed patient IDs for reproducibility. "
+            "±0.05 variance expected in episode mode due to random patient selection per reset."
+        ),
     }
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Persistent WebSocket endpoint. Each connection gets its own
+    isolated MedicalTriageEnvironment instance — no shared state.
+    Supports: reset, step messages.
+    """
+    await websocket.accept()
+    env = MedicalTriageEnvironment()
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            msg_type = message.get("type")
+
+            if msg_type == "reset":
+                task_id = message.get("task_id", "easy")
+                use_procedural = message.get("use_procedural", False)
+                hospital_config = None
+
+                if task_id == "mass_casualty":
+                    task_id = "hard"
+                    use_procedural = True
+                    hospital_config = MASS_CASUALTY_CONFIG["hospital_config"]
+
+                request = ResetRequest(
+                    task_id=task_id,
+                    use_procedural=use_procedural,
+                    num_patients=message.get("num_patients", 1),
+                    hospital_config=hospital_config,
+                )
+                obs = env.reset(request=request)
+                await websocket.send_text(json.dumps({"observation": obs.model_dump()}))
+
+            elif msg_type == "step":
+                action_data = message.get("action", {})
+                action = TriageAction(**action_data)
+                obs, reward, done, info = env.step(action)
+                await websocket.send_text(json.dumps({
+                    "observation": obs.model_dump(),
+                    "reward":      reward.model_dump(),
+                    "done":        done,
+                    "info":        info,
+                }))
+
+            elif msg_type == "state":
+                await websocket.send_text(json.dumps({"state": env.state()}))
+
+            else:
+                await websocket.send_text(json.dumps({"error": "Unknown message type. Use: reset, step, state"}))
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_text(json.dumps({"error": str(e)}))
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def main():

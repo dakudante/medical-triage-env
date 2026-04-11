@@ -1,11 +1,12 @@
 name: medical-triage-env
-version: "5.0.0"
+version: "6.0.0"
 description: >
   An OpenEnv environment where AI agents learn emergency medical triage using the
   Emergency Severity Index (ESI). Agents assess patient presentations, assign ESI
   levels (1–5), recommend departments, allocate resources, and specify routing
   decisions. Graders use a multi-objective V3 reward formula with asymmetric
-  undertriage penalties.
+  undertriage penalties. V6 adds a mass casualty task, ESI Enum type safety,
+  expanded patient pool groundwork, and full OpenEnv spec compliance.
 author: openenv-hackathon-team
 tags:
   - healthcare
@@ -27,7 +28,7 @@ environment:
   transport:
     http:
       description: >
-        Standard REST endpoints (/reset, /step, /state, /tasks, /grader, /baseline).
+        Standard async REST endpoints (/reset, /step, /state, /tasks, /grader, /baseline).
         Routed through the LiteLLM proxy when API_BASE_URL is set.
     websocket:
       path: /ws
@@ -38,15 +39,20 @@ environment:
         calls made through the OpenAI client (API_BASE_URL). Evaluators
         measuring proxy call counts should use the HTTP endpoints, or count
         LLM calls separately from environment transport calls.
+        Supports message types: reset, step, state.
 
 action:
   type: object
+  description: >
+    TriageAction — fully typed Pydantic model. ESILevel enum enforces
+    valid integer range (1–5). All fields except esi_level and department are optional.
   properties:
     esi_level:
       type: integer
       minimum: 1
       maximum: 5
-      description: "Emergency Severity Index level (1=Immediate, 5=Non-Urgent)"
+      enum_class: ESILevel
+      description: "Emergency Severity Index level (1=IMMEDIATE, 2=EMERGENT, 3=URGENT, 4=LESS_URGENT, 5=NON_URGENT)"
     department:
       type: string
       enum: [Resuscitation, Emergency, Cardiology, Neurology, Trauma,
@@ -54,13 +60,13 @@ action:
              Gastroenterology, Pulmonology]
     routing_decision:
       type: string
-      enum: [admit, wait]
-      description: "admit for ESI 1-3, wait for ESI 4-5"
+      enum: [admit, wait, reroute]
+      description: "admit for ESI 1-3, wait for ESI 4-5, reroute if no capacity"
     resource_request:
       type: object
       description: >
         Explicit resource allocation request. Omitting this field caps the
-        resource score at 0.70 (partial credit). Including it with the
+        resource score at 0.21 (partial credit). Including it with the
         correct resources yields full resource score (worth 30% of total reward).
       properties:
         icu_bed:         { type: boolean }
@@ -72,12 +78,13 @@ action:
         cath_lab:        { type: boolean }
     reasoning:
       type: string
-      description: "Brief clinical reasoning (logged; not scored directly)"
+      max_length: 800
+      description: "Brief clinical reasoning (logged; feeds XAI engine)"
   required: [esi_level, department]
 
 observation:
   type: object
-  description: "Returned by /reset and /step"
+  description: "TriageObservation — returned by /reset and /step"
   properties:
     presentation:
       type: string
@@ -86,10 +93,24 @@ observation:
       type: object
       properties:
         bp:     { type: string,  example: "90/60" }
-        hr:     { type: string,  example: "118" }
-        o2_sat: { type: number,  example: 94 }
-        rr:     { type: string,  example: "22" }
+        hr:     { type: integer, example: 118 }
+        o2_sat: { type: integer, example: 94 }
+        rr:     { type: integer, example: 22 }
         temp:   { type: number,  example: 38.5 }
+    initial_vitals:
+      type: object
+      description: "Vitals at presentation — compare with vitals to see trend"
+    timesteps_waited:
+      type: integer
+      description: "Steps patient has waited without treatment"
+    consciousness_score:
+      type: number
+      description: "1.0=alert, 0.0=unresponsive — degrades with delay"
+    has_deteriorated:
+      type: boolean
+    deterioration_events:
+      type: array
+      items: { type: string }
     difficulty:
       type: string
       enum: [easy, medium, hard]
@@ -120,16 +141,19 @@ observation:
       description: >
         Current hospital resource availability. Use this to inform
         resource_request — only request resources that are available.
+        Critical for mass_casualty task where capacity is reduced.
       properties:
         icu_beds_available:         { type: integer }
         er_beds_available:          { type: integer }
         ventilators_available:      { type: integer }
         ct_scanners_available:      { type: integer }
         cardiac_monitors_available: { type: integer }
+        doctors_available:          { type: integer }
+        nurses_available:           { type: integer }
     resource_gaps:
       type: array
       items: { type: string }
-      description: "List of resources this patient needs that are currently unavailable"
+      description: "Resources this patient needs that are currently unavailable"
     feedback:
       type: array
       items: { type: string }
@@ -137,11 +161,6 @@ observation:
     hint:
       type: string
       description: "Clinical hint provided after a subthreshold attempt (step > 1)"
-    has_deteriorated:
-      type: boolean
-    deterioration_events:
-      type: array
-      items: { type: string }
     last_total_score:    { type: number }
     last_esi_score:      { type: number }
     last_dept_score:     { type: number }
@@ -151,31 +170,64 @@ tasks:
   - id: easy
     name: "Textbook Triage"
     difficulty: easy
+    description: "Classic unambiguous presentations: obvious MI, opioid OD, pediatric fracture."
     expected_score_range: [0.85, 1.0]
+    pass_threshold: 0.75
+    patient_pool_size: 6
+
   - id: medium
     name: "Overlapping Presentations"
     difficulty: medium
+    description: "Panic attack vs cardiac, elderly confusion, renal colic, preeclampsia, GERD vs ACS."
     expected_score_range: [0.70, 0.90]
+    pass_threshold: 0.70
+    patient_pool_size: 6
+
   - id: hard
     name: "Subtle & Ambiguous Cases"
     difficulty: hard
+    description: "Aortic dissection (BP differential), epidural hematoma (lucid interval), serotonin syndrome."
     expected_score_range: [0.55, 0.80]
+    pass_threshold: 0.60
+    patient_pool_size: 6
+
+  - id: mass_casualty
+    name: "Mass Casualty Incident"
+    difficulty: hard
+    description: >
+      5 simultaneous patients arrive with mixed acuity.
+      Hospital running at reduced capacity: 2 ICU beds, 4 ER beds, 2 doctors.
+      Agent must triage and route all patients under resource pressure.
+      Tests prioritisation, routing decisions, and resource-aware triage.
+    expected_score_range: [0.50, 0.75]
+    pass_threshold: 0.55
+    num_patients: 5
+    hospital_config:
+      icu_beds: 2
+      er_beds: 4
+      resus_bays: 1
+      doctors_available: 2
+      nurses_available: 3
 
 episode:
   max_steps: 3
   termination: "score >= 0.75 OR max_steps reached"
+  done_threshold: 0.75
   note: >
     The done threshold is 0.75 (not 0.9). An agent scoring >= 0.75 on any
     step is considered to have triaged the patient acceptably and the episode
     ends early. The maximum achievable reward under the V3 formula is ~0.99
     (the formula is capped at [0.01, 0.99]); a score of 1.00 is not possible
-    in normal operation.
+    in normal operation. Score variance of ±0.05 is expected due to random
+    patient selection per reset — use fixed patient IDs via /grader for
+    fully deterministic evaluation.
 
 reward:
   version: V3
   description: >
     Multi-objective reward. Weights sum to 1.0 before penalties.
     Penalties are subtracted on top (can push total below zero before clamping).
+    Signal is dense — partial credit at every step, not just episode end.
   formula: |
     total = accuracy_component + resource_component
             - delay_penalty - mortality_penalty
@@ -191,7 +243,7 @@ reward:
       weight: 0.30
       note: >
         Full 0.30 if resource_request exactly matches patient needs.
-        0.70 x 0.30 = 0.21 (partial credit) if no resource_request supplied.
+        0.21 (partial credit) if no resource_request supplied.
   penalties:
     delay_penalty:
       rate: -0.15
@@ -202,9 +254,19 @@ reward:
     undertriage_penalty_severe:
       rate: -0.35
       trigger: "ESI-1/2 patient assigned ESI-4/5"
+      rationale: "Undertriage is clinically more dangerous than overtriage"
     undertriage_penalty_mild:
       rate: -0.15
       trigger: "ESI-1 patient assigned ESI-3"
     overtriage_penalty:
       rate: -0.15
       trigger: "ESI-4/5 patient sent to Resuscitation/ICU"
+
+limitations:
+  patient_pool: >
+    Current pool: 18 curated cases (6 easy / 6 medium / 6 hard).
+    Procedural generation available via use_procedural=true for easy/medium tasks.
+    V6 roadmap: expand to 50+ cases with richer procedural templates.
+  generalisation: >
+    Agents trained here should be validated on real clinical data before
+    any deployment consideration. This is a research/training environment.

@@ -1,5 +1,29 @@
 # Medical Triage OpenEnv — CHANGELOG
 
+## V6 (current)
+
+### New Features
+- **Mass Casualty task**: 4th task (`mass_casualty`) — 5 simultaneous patients, reduced hospital capacity (2 ICU beds, 4 ER beds, 2 doctors). Tests prioritisation under resource pressure. Wired through `ResetRequest.hospital_config`.
+- **ESILevel Enum**: `ESILevel(IntEnum)` in `models.py` — IMMEDIATE=1, EMERGENT=2, URGENT=3, LESS_URGENT=4, NON_URGENT=5. Type-safe action specification.
+- **OpenEnv base class**: `MedicalTriageEnvironment` now inherits from `openenv.core.Environment` (with graceful fallback if openenv-core not installed).
+
+### Fixes
+- **environment.py**: Renamed from `triage_environment.py` to `environment.py` for OpenEnv spec compliance. All imports updated.
+- **Async HTTP endpoints**: All HTTP endpoints (`/reset`, `/step`, `/state`, `/tasks`, `/grader`, `/baseline`) are now `async def` (OpenEnv spec compliance).
+- **State endpoint enriched**: `/state` now returns `episode_id`, `task_id`, `patient_id`, `step`, `done`, `best_score` — richer metadata for score variance tracking.
+- **Per-task pass thresholds**: `openenv.yaml` now includes `pass_threshold` per task (easy: 0.75, medium: 0.70, hard: 0.60, mass_casualty: 0.55).
+- **Score variance documented**: README and `/baseline` response now document ±0.05 expected variance and instructions for deterministic evaluation via `/grader`.
+- **WebSocket state message**: `/ws` now handles `{"type": "state"}` messages in addition to reset and step.
+- **Version bump**: `pyproject.toml` and `app.py` updated to 6.0.0.
+
+### Documentation
+- **EnvClient quick-start**: README now includes both HTTP and WebSocket quick-start code snippets.
+- **RL Formulation section**: Explicit state space, action space, reward, episode, stochasticity, and partial observability definitions added to README.
+- **Limitations section**: Patient pool size (18 cases), clinical validation gap, and observation cleanliness documented proactively.
+- **openenv.yaml enriched**: Full action schema with `ESILevel` enum reference, per-task pass thresholds, score variance note, limitations block.
+
+# Medical Triage OpenEnv — CHANGELOG
+
 ## V5 (current)
 
 ### Fixes

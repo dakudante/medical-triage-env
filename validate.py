@@ -48,7 +48,7 @@ def validate(base_url):
         r = requests.get(f"{base_url}/tasks", timeout=15)
         results.append(check("/tasks returns 200", r.status_code == 200))
         tasks = r.json().get("tasks", [])
-        results.append(check("  3 tasks present", len(tasks) == 3, f"found {len(tasks)}"))
+        results.append(check("  3+ tasks present", len(tasks) >= 3, f"found {len(tasks)}"))
         for diff in ["easy", "medium", "hard"]:
             results.append(check(f"  task '{diff}' exists", any(t["task_id"] == diff for t in tasks)))
         for t in tasks:
