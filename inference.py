@@ -17,9 +17,6 @@ CHANGES vs V4 (inference.py):
   V5.2: Version metadata reflected in log output ([INFO] version=V5).
 """
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import os
 import re
 import sys
@@ -27,7 +24,27 @@ import json
 import time
 import asyncio
 import websockets
+from pathlib import Path
 from openai import OpenAI
+
+# ── Load .env robustly — works regardless of working directory ─────────────────
+try:
+    from dotenv import load_dotenv
+    # Try script directory first, then cwd, then parent
+    _script_dir = Path(__file__).resolve().parent
+    _dotenv_path = None
+    for candidate in [_script_dir / ".env", Path.cwd() / ".env", _script_dir.parent / ".env"]:
+        if candidate.exists():
+            _dotenv_path = candidate
+            break
+    if _dotenv_path:
+        load_dotenv(dotenv_path=_dotenv_path, override=False)
+        print(f"[INFO] Loaded .env from {_dotenv_path}", flush=True)
+    else:
+        load_dotenv(override=False)
+        print("[WARN] No .env file found — relying on system environment variables", flush=True)
+except ImportError:
+    print("[WARN] python-dotenv not installed. Run: pip install python-dotenv", flush=True)
 
 # ── Environment variables ──────────────────────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
@@ -44,6 +61,24 @@ if _env_base:
     ENV_WS_URL = _env_base + "/ws"
 else:
     ENV_WS_URL = os.getenv("ENV_WS_URL", "ws://localhost:7860/ws")
+
+# ── Startup guard — catch the most common misconfiguration early ───────────────
+if "localhost" in ENV_WS_URL or "127.0.0.1" in ENV_WS_URL:
+    print("", flush=True)
+    print("=" * 60, flush=True)
+    print("[ERROR] ENV_WS_URL is pointing to localhost:", flush=True)
+    print(f"        {ENV_WS_URL}", flush=True)
+    print("", flush=True)
+    print("  This means ENV_BASE_URL was not set in your .env file.", flush=True)
+    print("  Open your .env file and add:", flush=True)
+    print("", flush=True)
+    print("  ENV_BASE_URL=https://dakudante-medical-triage-env.hf.space", flush=True)
+    print("  API_KEY=your_hf_token_here", flush=True)
+    print("", flush=True)
+    print("  Your .env file should be in the same folder as inference.py", flush=True)
+    print("=" * 60, flush=True)
+    print("", flush=True)
+    sys.exit(1)
 
 TASK_IDS  = ["easy", "medium", "hard"]
 MAX_STEPS = 3
@@ -371,7 +406,7 @@ async def main():
     t0     = time.time()
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    print(f"[INFO] version=V5 env={ENV_WS_URL} model={MODEL_NAME}", flush=True)
+    print(f"[INFO] version=V6 env={ENV_WS_URL} model={MODEL_NAME}", flush=True)
 
     scores = []
     for task_id in TASK_IDS:
