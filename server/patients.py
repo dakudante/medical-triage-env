@@ -96,7 +96,9 @@ def generate_patient_from_template(template: dict, instance_suffix: str = "") ->
         "correct_esi": t["correct_esi"],
         "correct_department": t["correct_department"],
         "reasoning": t["reasoning_template"].format(
-            age=age, sex=sex, hr=hr, o2=o2, bp_sys=bp_sys
+            age=age, sex=sex, hr=hr, o2=o2,
+            bp_sys=bp_sys, bp_dia=bp_dia,
+            rr=rr, temp=temp,
         ),
         "esi_partial_credit": t["esi_partial_credit"],
         "department_options": t["department_options"],

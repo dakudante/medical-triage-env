@@ -1,5 +1,29 @@
 # Medical Triage OpenEnv — CHANGELOG
 
+## V7 (current)
+
+### Bug Fixes
+- **CRITICAL — procedural generation crash**: `generate_patient_from_template()` in
+  `server/patients.py` called `reasoning_template.format(age, sex, hr, o2, bp_sys)`
+  but 6 new V6.5 templates used additional placeholders `{temp}`, `{rr}`, and
+  `{bp_dia}` in their reasoning strings. This caused a `KeyError` whenever the
+  server picked a procedural patient from those templates, crashing the WebSocket
+  reset and returning `{"error": "'rr'"}` (or `'temp'`, `'bp_dia'`) to the client.
+  Fix: `.format()` now passes all 8 vitals variables: `age, sex, hr, o2, bp_sys,
+  bp_dia, rr, temp`. All 14 templates verified clean.
+  Affected templates: `sepsis`, `serotonin_syndrome`, `anaphylaxis`, `dka`,
+  `heat_stroke`, `post_op_complication`.
+
+### Patient Pool (Pillar 1 — V7 Roadmap)
+- **54 curated cases confirmed**: 18 easy / 18 medium / 18 hard — 3× the original
+  V5 pool of 18. All cases verified to have complete vitals, xai_metadata,
+  progression profiles, and resource requirements.
+- **14 condition templates**: Up from 8 in V6. New: `anaphylaxis`, `dka`,
+  `heat_stroke`, `lithium_toxicity`, `post_op_complication`, `hypoglycaemia`.
+- **Version**: inference.py updated to V7.
+
+# Medical Triage OpenEnv — CHANGELOG
+
 ## V6 (current)
 
 ### New Features
