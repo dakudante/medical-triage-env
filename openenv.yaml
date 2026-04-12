@@ -210,20 +210,18 @@ tasks:
       nurses_available: 3
 
 episode:
-  max_steps: 3
+  max_steps: 6
   termination: "score >= 0.75 OR max_steps reached"
   done_threshold: 0.75
   note: >
-    The done threshold is 0.75 (not 0.9). An agent scoring >= 0.75 on any
+    The done threshold is 0.75. An agent scoring >= 0.75 on any
     step is considered to have triaged the patient acceptably and the episode
-    ends early. The maximum achievable reward under the V3 formula is ~0.99
-    (the formula is capped at [0.01, 0.99]); a score of 1.00 is not possible
-    in normal operation. Score variance of ±0.05 is expected due to random
-    patient selection per reset — use fixed patient IDs via /grader for
-    fully deterministic evaluation.
+    ends early. Standard episodes now run up to 6 steps to support multi-turn
+    reasoning, partial observability, and nurse handoff evaluation. Use fixed
+    seeds or fixed patient IDs via /grader for fully deterministic evaluation.
 
 reward:
-  version: V3
+  version: V4
   description: >
     Multi-objective reward. Weights sum to 1.0 before penalties.
     Penalties are subtracted on top (can push total below zero before clamping).

@@ -13,7 +13,7 @@ New additions over V2:
 from __future__ import annotations
 from enum import IntEnum
 from typing import Optional, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 try:
     from openenv.core import Environment as OpenEnvBase
@@ -323,8 +323,8 @@ class ResourceRequest(BaseModel):
     cardiac_monitor: bool = Field(False)
     cath_lab: bool = Field(False)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "icu_bed": True,
                 "er_bed": False,
@@ -336,6 +336,7 @@ class ResourceRequest(BaseModel):
                 "cath_lab": False,
             }
         }
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -389,8 +390,8 @@ class TriageAction(BaseModel):
         ),
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "esi_level": 2,
                 "department": "Emergency",
@@ -405,6 +406,7 @@ class TriageAction(BaseModel):
                 "priority_rank": 1,
             }
         }
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -567,8 +569,8 @@ class TriageReward(BaseModel):
         ),
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "value": 0.74,
                 "esi_score": 0.99,
@@ -588,6 +590,7 @@ class TriageReward(BaseModel):
                 },
             }
         }
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

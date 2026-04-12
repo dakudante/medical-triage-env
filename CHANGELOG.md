@@ -219,3 +219,9 @@ The following modifications and improvements have been implemented:
 ## 6. Code Integrity
 - All new components are integrated with the existing `models.py` and `triage_environment.py` systems.
 - Maintained backward compatibility where possible while advancing the environment to V3 standards.
+
+
+## V7.1.0
+- Added PPO-lite RL training loop with multi-head policy network.
+- Added feature extractor, checkpoint save/load, and evaluation script.
+- Added top-level patients.py compatibility shim and reset(string) support.

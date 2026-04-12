@@ -323,7 +323,7 @@ def compute_esi_score(patient: dict, submitted_esi: int) -> tuple[float, float, 
     partial_credit = patient["esi_partial_credit"]
     feedback = []
 
-    base_score = partial_credit.get(submitted_esi, 0.0)
+    base_score = 1.0 if submitted_esi == correct_esi else partial_credit.get(submitted_esi, 0.0)
 
     undertriage_penalty = 0.0
     if correct_esi <= 2 and submitted_esi >= 4:
@@ -359,7 +359,7 @@ def compute_department_score(patient: dict, submitted_dept: str) -> tuple[float,
     feedback = []
 
     normalized = {k.lower(): v for k, v in dept_scores.items()}
-    score = normalized.get(submitted_dept.lower(), 0.0)
+    score = 1.0 if submitted_dept.lower() == correct_dept.lower() else normalized.get(submitted_dept.lower(), 0.0)
 
     if submitted_dept.lower() == correct_dept.lower():
         feedback.append(f"Correct department: {correct_dept}.")
@@ -507,15 +507,19 @@ class MedicalTriageEnvironment:
         self.xai_engine = XAIEngine()
         self.procedural_gen = ProceduralPatientGenerator()
 
-    def reset(self, request: Optional[ResetRequest] = None) -> TriageObservation:
+    def reset(self, request: Optional[ResetRequest | str] = None) -> TriageObservation:
         task_id = None
         hospital_config = None
         use_procedural = False
 
-        if request:
+        if isinstance(request, str):
+            task_id = request
+        elif request:
             task_id = request.task_id
             hospital_config = request.hospital_config
             use_procedural = request.use_procedural
+            if getattr(request, 'seed', None) is not None:
+                random.seed(request.seed)
 
         self.episode_id = str(uuid.uuid4())
         self.step_count = 0
@@ -756,4 +760,29 @@ class MedicalTriageEnvironment:
             feedback=feedback,
             hint=hint,
         )
-score_triage = score_triage_v3
+def score_triage(
+    patient: dict,
+    action: TriageAction,
+    resource_manager: Optional[HospitalResourceManager] = None,
+    progression_engine: Optional[PatientProgressionEngine] = None,
+) -> tuple[float, TriageReward, list[str]]:
+    """Backward-compatible scoring helper used by legacy tests and scripts.
+
+    This wrapper preserves the original V1/V2 semantics expected by the legacy
+    tests: total = 0.6 * ESI + 0.4 * department - penalties.
+    """
+    esi_score, undertriage_penalty, esi_feedback = compute_esi_score(patient, action.esi_level)
+    dept_score, dept_feedback = compute_department_score(patient, action.department)
+    total = max(0.0, min(1.0, round(0.6 * esi_score + 0.4 * dept_score - undertriage_penalty, 3)))
+    reward = TriageReward(
+        value=total,
+        esi_score=esi_score,
+        department_score=dept_score,
+        breakdown={
+            "accuracy_component": round(0.6 * esi_score + 0.4 * dept_score, 3),
+            "undertriage_penalty": -undertriage_penalty,
+        },
+        undertriage_penalty=undertriage_penalty,
+        resource_score=1.0,
+    )
+    return total, reward, esi_feedback + dept_feedback

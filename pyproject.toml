@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "medical-triage-env"
-version = "7.0.0"
+version = "7.1.0"
 description = "An OpenEnv environment for AI-powered emergency medical triage using the Emergency Severity Index (ESI)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,7 @@ dependencies = [
     "openenv-core==0.1.0",
     "requests>=2.31.0",
     "openai>=1.40.0",
+    "torch>=2.2.0",
 ]
 
 [project.optional-dependencies]

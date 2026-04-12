@@ -343,3 +343,21 @@ Scores from Qwen/Qwen2.5-72B-Instruct via HuggingFace Router under the V3 reward
 - EnvClient quick-start snippet added
 
 See [CHANGELOG.md](CHANGELOG.md) for full history.
+
+
+## PPO-lite training (V7.1)
+
+This version adds a small but real RL pipeline built on PyTorch. It trains a multi-head policy over ESI, department, routing, and resource requests using PPO-style clipped updates.
+
+### Quick start
+
+```bash
+python train_ppo.py --updates 4 --episodes-per-update 6 --output-dir artifacts
+python evaluate_ppo.py --checkpoint artifacts/ppo_lite_checkpoint.pt --episodes 9
+```
+
+Artifacts saved:
+- `artifacts/ppo_lite_checkpoint.pt`
+- `artifacts/train_metrics.json`
+
+The trainer uses the local `MedicalTriageEnvironment` directly, so it does not require the websocket server to be running.
