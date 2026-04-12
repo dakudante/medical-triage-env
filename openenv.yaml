@@ -1,12 +1,12 @@
 name: medical-triage-env
-version: "6.0.0"
+version: "8.0.0"
 description: >
   An OpenEnv environment where AI agents learn emergency medical triage using the
   Emergency Severity Index (ESI). Agents assess patient presentations, assign ESI
   levels (1–5), recommend departments, allocate resources, and specify routing
-  decisions. Graders use a multi-objective V3 reward formula with asymmetric
-  undertriage penalties. V6 adds a mass casualty task, ESI Enum type safety,
-  expanded patient pool groundwork, and full OpenEnv spec compliance.
+  decisions. Graders use a multi-objective V4 reward formula with asymmetric
+  undertriage penalties. V8 adds a paediatric task, expanded 57-case patient pool,
+  rl/ package in Docker image, and torch moved to requirements-rl.txt.
 author: openenv-hackathon-team
 tags:
   - healthcare
@@ -208,6 +208,18 @@ tasks:
       resus_bays: 1
       doctors_available: 2
       nurses_available: 3
+
+  - id: paediatric
+    name: "Paediatric Triage"
+    difficulty: medium
+    description: >
+      Age-appropriate emergency presentations with paediatric vital ranges.
+      Cases include febrile seizure, croup, intussusception, bronchiolitis,
+      and paediatric trauma. Agents must apply child-specific ESI thresholds
+      and paediatric-appropriate department routing.
+    expected_score_range: [0.65, 0.90]
+    pass_threshold: 0.65
+    patient_pool_size: 8
 
 episode:
   max_steps: 6

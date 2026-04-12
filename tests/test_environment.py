@@ -224,12 +224,12 @@ class TestLifecycle:
 class TestPatientBank:
 
     def test_18_patients_total(self):
-        assert len(PATIENTS) == 18
+        assert len(PATIENTS) == 57
 
     def test_6_per_difficulty(self):
-        assert len(EASY_CASES) == 6
-        assert len(MEDIUM_CASES) == 6
-        assert len(HARD_CASES) == 6
+        assert len(EASY_CASES) == 19
+        assert len(MEDIUM_CASES) == 19
+        assert len(HARD_CASES) == 19
 
     def test_all_patients_have_required_fields(self):
         required = ["id", "difficulty", "presentation", "vitals",

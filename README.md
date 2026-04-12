@@ -1,5 +1,5 @@
 ---
-title: Medical Triage OpenEnv V6
+title: Medical Triage OpenEnv V8
 emoji: 🏥
 colorFrom: red
 colorTo: blue
@@ -15,7 +15,7 @@ tags:
 license: mit
 ---
 
-# Medical Triage — OpenEnv Environment V6
+# Medical Triage — OpenEnv Environment V8
 
 First medical triage RL environment in OpenEnv. Agents learn to assign ESI
 triage levels and recommend departments for emergency patients.
@@ -25,7 +25,7 @@ triage levels and recommend departments for emergency patients.
 [![openenv](https://img.shields.io/badge/OpenEnv-compatible-blue)](https://github.com/meta-pytorch/OpenEnv)
 [![HF Space](https://img.shields.io/badge/HuggingFace-Space-yellow)](https://huggingface.co/spaces/DakuDante/medical-triage-env)
 [![Domain](https://img.shields.io/badge/Domain-Healthcare-red)](https://huggingface.co/spaces/DakuDante/medical-triage-env)
-[![Version](https://img.shields.io/badge/Version-6.0.0-green)](https://huggingface.co/spaces/DakuDante/medical-triage-env)
+[![Version](https://img.shields.io/badge/Version-8.0.0-green)](https://huggingface.co/spaces/DakuDante/medical-triage-env)
 
 > First medical triage RL environment in the OpenEnv ecosystem.
 
@@ -147,7 +147,7 @@ Panic attack vs cardiac, elderly confusion, renal colic, preeclampsia, GERD vs A
 ### Hard — Subtle & Ambiguous
 Aortic dissection (BP differential), epidural hematoma (lucid interval), serotonin syndrome, lupus flare, pulmonary embolism.
 
-### Mass Casualty Incident (V6 new)
+### Mass Casualty Incident (V6+)
 5 simultaneous patients with mixed acuity. Hospital running at reduced capacity:
 2 ICU beds, 4 ER beds, 1 resus bay, 2 doctors. Tests prioritisation and resource-aware routing under pressure.
 
@@ -324,15 +324,16 @@ Scores from Qwen/Qwen2.5-72B-Instruct via HuggingFace Router under the V3 reward
 
 ## Limitations
 
-- **Patient pool**: 18 curated cases. Agents trained here should be tested on a wider case pool before strong generalisation claims. Procedural generation is available via `use_procedural=true` for easy/medium tasks for unlimited variety.
+- **Patient pool**: 57 curated cases (19 easy / 19 medium / 19 hard + 8 paediatric). Agents trained here should be tested on a wider case pool before strong generalisation claims. Procedural generation is available via `use_procedural=true` for easy/medium tasks for unlimited variety.
 - **Clinical validation**: The reward function encodes ESI heuristics but has not been formally validated against real ED outcome data (mortality, length of stay).
-- **Observation cleanliness**: Current observations are well-structured. Real ED data is noisier and more incomplete — a known gap addressed in the V7 roadmap.
+- **Observation cleanliness**: Current observations are well-structured. Real ED data is noisier and more incomplete — a known gap addressed in the V9 roadmap.
 
 ---
 
-## V6 Changes
+## V8 Changes
 
 - Mass casualty task (4th task, 5 patients, reduced hospital capacity)
+- Paediatric task added (5th task, age-appropriate vital ranges)
 - `ESILevel` IntEnum for type-safe action specification
 - `MedicalTriageEnvironment` inherits from `openenv.core.Environment`
 - All HTTP endpoints are now `async`
@@ -341,11 +342,14 @@ Scores from Qwen/Qwen2.5-72B-Instruct via HuggingFace Router under the V3 reward
 - Score variance documentation added
 - RL Formulation section added to README
 - EnvClient quick-start snippet added
+- Patient pool expanded to 57 cases (19 per core difficulty)
+- `rl/` package now copied into Docker image for evaluators
+- `torch` moved to `requirements-rl.txt` (keeps image slim, ~2 GB savings)
 
 See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 
-## PPO-lite training (V7.1)
+## PPO-lite training (V8)
 
 This version adds a small but real RL pipeline built on PyTorch. It trains a multi-head policy over ESI, department, routing, and resource requests using PPO-style clipped updates.
 

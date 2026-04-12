@@ -1,0 +1,4 @@
+# RL training dependencies — install separately (not included in the Docker image).
+# These are only needed to run rl/train_ppo.py and rl/evaluate_ppo.py locally.
+# Install with: pip install -r requirements-rl.txt
+torch>=2.2.0
