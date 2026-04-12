@@ -51,6 +51,9 @@ app.add_middleware(
 # WebSocket connections each get their own isolated instance (see /ws below).
 _http_env = MedicalTriageEnvironment()
 
+# Pillar 4.3: In-memory leaderboard (persists for server lifetime)
+_leaderboard: list[dict] = []
+
 # Mass casualty task config — wired through hospital_config override
 MASS_CASUALTY_CONFIG = {
     "task_id": "mass_casualty",
@@ -100,7 +103,10 @@ async def reset(request: ResetRequest = None):
             num_patients=MASS_CASUALTY_CONFIG["num_patients"],
             use_procedural=MASS_CASUALTY_CONFIG["use_procedural"],
             hospital_config=MASS_CASUALTY_CONFIG["hospital_config"],
+            seed=request.seed,
+            partial_obs=request.partial_obs,
         )
+    # Paediatric task passes through directly — TASK_CONFIGS handles it
 
     obs = _http_env.reset(request=request)
     return ResetResponse(observation=obs)
@@ -150,6 +156,30 @@ async def get_tasks():
         },
     }
     base_tasks.append(mass_casualty_task)
+
+    # Pillar 1.3: paediatric task
+    paediatric_task = {
+        "task_id": "paediatric",
+        "name": "Paediatric Triage",
+        "difficulty": "medium",
+        "description": (
+            "Children aged 0-16 with age-appropriate vital ranges. "
+            "Paediatric normal values differ significantly from adults. "
+            "Cases include febrile seizure, epiglottitis, and appendicitis in adolescents."
+        ),
+        "expected_score_range": [0.65, 0.90],
+        "pass_threshold": 0.70,
+        "num_patients": 3,
+        "age_group": "paediatric",
+        "action_schema": {
+            "esi_level": {"type": "integer", "minimum": 1, "maximum": 5},
+            "department": {"type": "string", "enum": DEPARTMENTS},
+            "routing_decision": {"type": "string", "enum": ["admit", "wait", "reroute"]},
+            "resource_request": {"type": "object"},
+            "reasoning": {"type": "string"},
+        },
+    }
+    base_tasks.append(paediatric_task)
     return {"tasks": base_tasks}
 
 
@@ -223,6 +253,114 @@ async def baseline():
     }
 
 
+@app.get("/audit")
+async def get_audit():
+    """
+    Pillar 5.3: Per-episode audit log.
+    Returns last 50 episode entries with full action, score, failure_mode, and outcome details.
+    Gives evaluators complete transparency into agent decision-making across runs.
+    Stored in memory — resets on server restart. Max 200 entries retained.
+    """
+    entries = _http_env._audit_log[-50:]
+    failure_summary = {}
+    outcome_summary = {}
+    for e in entries:
+        fm = e.get("failure_mode", "UNKNOWN")
+        fo = e.get("final_outcome", "IN_PROGRESS")
+        failure_summary[fm] = failure_summary.get(fm, 0) + 1
+        if fo:
+            outcome_summary[fo] = outcome_summary.get(fo, 0) + 1
+    return {
+        "total_entries": len(_http_env._audit_log),
+        "returned": len(entries),
+        "failure_mode_summary": failure_summary,
+        "outcome_summary": outcome_summary,
+        "entries": entries,
+    }
+
+
+@app.get("/leaderboard")
+async def get_leaderboard():
+    """
+    Pillar 4.3: In-memory leaderboard — top 10 runs by average score.
+    Resets when server restarts. Use POST /leaderboard/submit to add a run.
+    """
+    sorted_board = sorted(_leaderboard, key=lambda x: x["average_score"], reverse=True)
+    return {
+        "leaderboard": sorted_board[:10],
+        "total_submissions": len(_leaderboard),
+        "note": "Leaderboard resets on server restart. For persistent leaderboard, use /grader with fixed patient IDs.",
+    }
+
+
+@app.post("/leaderboard/submit")
+async def submit_leaderboard(payload: dict):
+    """
+    Pillar 4.3: Submit a completed run to the leaderboard.
+    Body: {agent_name: str, easy_score: float, medium_score: float, hard_score: float}
+    """
+    agent_name = payload.get("agent_name", "anonymous")
+    scores = {
+        "easy":   round(float(payload.get("easy_score", 0.0)), 3),
+        "medium": round(float(payload.get("medium_score", 0.0)), 3),
+        "hard":   round(float(payload.get("hard_score", 0.0)), 3),
+    }
+    avg = round(sum(scores.values()) / 3, 3)
+    entry = {
+        "agent_name": agent_name,
+        "scores": scores,
+        "average_score": avg,
+        "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+    }
+    _leaderboard.append(entry)
+    rank = sum(1 for e in _leaderboard if e["average_score"] > avg) + 1
+    return {"submitted": True, "entry": entry, "current_rank": rank}
+
+
+@app.post("/rollout_batch")
+async def rollout_batch(payload: dict):
+    """
+    Pillar 4.1: Parallel batch rollout endpoint.
+    Runs N simultaneous single-step episodes using asyncio.gather.
+    Body: {task_id: str, n_episodes: int (max 16), seed: int (optional)}
+    Returns: list of {observation, task_id, episode_id} for GRPO training.
+
+    Usage: POST /rollout_batch {task_id: "medium", n_episodes: 8}
+    Each returned observation is a fresh reset — caller then calls /step per episode.
+    For full trajectory collection use the WebSocket endpoint with per-connection env.
+    """
+    task_id = payload.get("task_id", "easy")
+    n_episodes = min(int(payload.get("n_episodes", 4)), 16)  # cap at 16
+    base_seed = payload.get("seed")
+
+    async def _single_reset(idx: int) -> dict:
+        env = MedicalTriageEnvironment()
+        seed = (base_seed + idx) if base_seed is not None else None
+        req = ResetRequest(
+            task_id=task_id,
+            use_procedural=payload.get("use_procedural", False),
+            partial_obs=payload.get("partial_obs", False),
+            seed=seed,
+        )
+        obs = env.reset(request=req)
+        return {
+            "episode_index": idx,
+            "episode_id": obs.episode_id,
+            "task_id": task_id,
+            "patient_id": obs.patient_id,
+            "observation": obs.model_dump(),
+            "seed": seed,
+        }
+
+    results = await asyncio.gather(*[_single_reset(i) for i in range(n_episodes)])
+    return {
+        "n_episodes": n_episodes,
+        "task_id": task_id,
+        "episodes": list(results),
+        "note": "Each episode is a fresh env instance. Use WebSocket /ws for full multi-step trajectories.",
+    }
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
@@ -254,6 +392,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     use_procedural=use_procedural,
                     num_patients=message.get("num_patients", 1),
                     hospital_config=hospital_config,
+                    seed=message.get("seed"),                    # Pillar 4.4
+                    partial_obs=message.get("partial_obs", False), # Pillar 2.2
                 )
                 obs = env.reset(request=request)
                 await websocket.send_text(json.dumps({"observation": obs.model_dump()}))

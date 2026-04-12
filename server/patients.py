@@ -1181,9 +1181,22 @@ TEMPLATE_MAP: dict[str, dict] = {t["condition_id"]: t for t in CONDITION_TEMPLAT
 
 def _static(base: dict, progression: dict, resources: dict, xai: dict) -> dict:
     """Attach V3 fields to a static patient case."""
+    # Pillar 1.3: auto-assign age_group from presentation text
+    pres = base.get("presentation", "")
+    import re as _re
+    age_match = _re.search(r"(\d+)-year-old", pres)
+    age_val = int(age_match.group(1)) if age_match else 99
+    if age_val <= 16:
+        age_group = "paediatric"
+    elif age_val <= 64:
+        age_group = "adult"
+    else:
+        age_group = "elderly"
+
     return {
         **base,
         "is_procedural": False,
+        "age_group": base.get("age_group", age_group),
         "progression": progression,
         "resources_required": resources,
         "xai_metadata": {
@@ -3746,10 +3759,180 @@ PATIENTS = [
 ]
 
 
+# Pillar 1.3: Paediatric sub-pool — patients aged 0-16
+# These cases feature age-appropriate vital ranges and paediatric-specific presentations
+PAEDIATRIC_PATIENTS = [
+
+    _static(
+        base={
+            "id": "paed_001",
+            "difficulty": "easy",
+            "age_group": "paediatric",
+            "presentation": (
+                "7-year-old male. Febrile seizure lasting 2 minutes, now post-ictal. "
+                "No prior seizure history. Temp 39.8°C, HR 134, O2 sat 97%, RR 28. "
+                "Pupils equal and reactive. Moving all limbs."
+            ),
+            "vitals": {"bp": "100/65", "hr": 134, "o2_sat": 97, "rr": 28, "temp": 39.8},
+            "correct_esi": 2,
+            "correct_department": "Pediatrics",
+            "reasoning": (
+                "Febrile seizure in a 7-year-old. Post-ictal, now rousable — high-risk "
+                "period for recurrence. ESI-2: requires urgent workup, fever control, "
+                "neurological monitoring. Paediatric normal ranges: HR up to 140 is "
+                "acceptable but combined with fever = emergent."
+            ),
+            "esi_partial_credit": {1: 0.5, 2: 0.99, 3: 0.4, 4: 0.01, 5: 0.01},
+            "department_options": ["Pediatrics", "Emergency", "Neurology"],
+            "department_scores": {"Pediatrics": 0.99, "Emergency": 0.7, "Neurology": 0.6},
+        },
+        progression={
+            "description": "Risk of recurrent seizure within 24h; fever worsening increases risk.",
+            "per_timestep": {"o2_sat_delta": 0, "hr_delta": +2, "bp_systolic_delta": 0, "consciousness_delta": -0.05},
+            "mortality_risk_per_step": 0.02,
+            "critical_thresholds": {"consciousness": 0.6, "o2_sat": 92},
+        },
+        resources={
+            "er_bed": True, "icu_bed": False, "cardiac_monitor": True,
+            "ecg_machine": False, "cath_lab": False, "ventilator": False,
+            "ct_scanner": False, "or_room": False, "mri_scanner": False,
+            "nurse_ratio": 1, "doctor_specialist": "Paediatrics",
+        },
+        xai={
+            "primary_diagnosis": "Febrile seizure",
+            "differentials": [
+                {"diagnosis": "Simple febrile seizure", "probability": 0.65},
+                {"diagnosis": "Meningitis / encephalitis", "probability": 0.20},
+                {"diagnosis": "Complex febrile seizure", "probability": 0.10},
+                {"diagnosis": "Epilepsy — first presentation", "probability": 0.05},
+            ],
+            "symptom_weights": {"febrile seizure": 0.90, "post-ictal state": 0.80, "fever 39.8°C": 0.75},
+            "vital_flags": ["HR 134 (paediatric tachycardia)", "Temp 39.8°C (high fever)"],
+            "confidence": 0.82,
+            "key_reasoning_points": [
+                "Rule out meningitis — neck stiffness check essential",
+                "Paediatric normal HR 70-120 at rest; 134 + fever = tachycardia",
+                "Antipyretics + observation minimum 1 hour; LP if meningism signs",
+            ],
+        },
+    ),
+
+    _static(
+        base={
+            "id": "paed_002",
+            "difficulty": "medium",
+            "age_group": "paediatric",
+            "presentation": (
+                "4-year-old female. Inspiratory stridor at rest, drooling, sitting forward "
+                "in tripod position. Fever 39.2°C, HR 148, O2 sat 92%, RR 32. "
+                "Appears frightened and is not crying. Onset sudden, 45 minutes ago."
+            ),
+            "vitals": {"bp": "96/58", "hr": 148, "o2_sat": 92, "rr": 32, "temp": 39.2},
+            "correct_esi": 1,
+            "correct_department": "Resuscitation",
+            "reasoning": (
+                "Classic epiglottitis presentation — tripod posture, drooling, stridor, "
+                "high fever, not crying. Do NOT examine throat — can cause complete "
+                "airway obstruction. ESI-1: airway emergency, ENT + anaesthetics now."
+            ),
+            "esi_partial_credit": {1: 0.99, 2: 0.35, 3: 0.05, 4: 0.01, 5: 0.01},
+            "department_options": ["Resuscitation", "Pediatrics", "Emergency"],
+            "department_scores": {"Resuscitation": 0.99, "Pediatrics": 0.5, "Emergency": 0.6},
+        },
+        progression={
+            "description": "Epiglottitis — complete airway obstruction can occur within minutes.",
+            "per_timestep": {"o2_sat_delta": -4, "hr_delta": +8, "bp_systolic_delta": -5, "consciousness_delta": -0.20},
+            "mortality_risk_per_step": 0.20,
+            "critical_thresholds": {"o2_sat": 85, "consciousness": 0.5},
+        },
+        resources={
+            "er_bed": False, "icu_bed": True, "cardiac_monitor": True,
+            "ecg_machine": False, "cath_lab": False, "ventilator": True,
+            "ct_scanner": False, "or_room": True, "mri_scanner": False,
+            "nurse_ratio": 2, "doctor_specialist": "ENT + Anaesthetics",
+        },
+        xai={
+            "primary_diagnosis": "Epiglottitis",
+            "differentials": [
+                {"diagnosis": "Acute epiglottitis", "probability": 0.75},
+                {"diagnosis": "Croup (laryngotracheobronchitis)", "probability": 0.15},
+                {"diagnosis": "Foreign body aspiration", "probability": 0.08},
+                {"diagnosis": "Bacterial tracheitis", "probability": 0.02},
+            ],
+            "symptom_weights": {"tripod posture": 0.95, "drooling": 0.90, "inspiratory stridor": 0.88, "high fever": 0.80},
+            "vital_flags": ["O2 sat 92% (hypoxia)", "HR 148 (severe tachycardia)", "RR 32 (respiratory distress)"],
+            "confidence": 0.88,
+            "key_reasoning_points": [
+                "NEVER examine the throat — spatula can trigger complete obstruction",
+                "Keep child calm and in position of comfort — do not lay flat",
+                "Call ENT + anaesthetics simultaneously; prepare for emergency intubation",
+            ],
+        },
+    ),
+
+    _static(
+        base={
+            "id": "paed_003",
+            "difficulty": "hard",
+            "age_group": "paediatric",
+            "presentation": (
+                "14-year-old female. 3-day history of abdominal pain, now migrating to right "
+                "lower quadrant. Nausea and one episode of vomiting. Temp 38.4°C, HR 106, "
+                "O2 sat 99%, RR 18. Rebound tenderness at McBurney's point. Last ate 6h ago."
+            ),
+            "vitals": {"bp": "112/72", "hr": 106, "o2_sat": 99, "rr": 18, "temp": 38.4},
+            "correct_esi": 2,
+            "correct_department": "General",
+            "reasoning": (
+                "Perforated / perforating appendicitis in an adolescent. 3-day history + "
+                "rebound tenderness = high perforation risk. ESI-2: surgical emergency, "
+                "nil by mouth, IV access, surgical review. Differential: ectopic pregnancy "
+                "must be excluded in adolescent females."
+            ),
+            "esi_partial_credit": {1: 0.6, 2: 0.99, 3: 0.5, 4: 0.05, 5: 0.01},
+            "department_options": ["General", "Emergency", "Pediatrics"],
+            "department_scores": {"General": 0.99, "Emergency": 0.65, "Pediatrics": 0.55},
+        },
+        progression={
+            "description": "Appendicitis — perforation risk increases with time; peritonitis is life-threatening.",
+            "per_timestep": {"o2_sat_delta": 0, "hr_delta": +4, "bp_systolic_delta": -3, "consciousness_delta": 0},
+            "mortality_risk_per_step": 0.04,
+            "critical_thresholds": {"hr": 130, "bp_systolic": 90},
+        },
+        resources={
+            "er_bed": True, "icu_bed": False, "cardiac_monitor": True,
+            "ecg_machine": False, "cath_lab": False, "ventilator": False,
+            "ct_scanner": True, "or_room": True, "mri_scanner": False,
+            "nurse_ratio": 1, "doctor_specialist": "General surgery + Paediatrics",
+        },
+        xai={
+            "primary_diagnosis": "Acute appendicitis (likely perforating)",
+            "differentials": [
+                {"diagnosis": "Perforating appendicitis", "probability": 0.70},
+                {"diagnosis": "Ovarian pathology / ectopic pregnancy", "probability": 0.15},
+                {"diagnosis": "Mesenteric adenitis", "probability": 0.10},
+                {"diagnosis": "Inflammatory bowel disease", "probability": 0.05},
+            ],
+            "symptom_weights": {"RLQ rebound tenderness": 0.90, "migrating pain": 0.85, "3-day history": 0.80},
+            "vital_flags": ["HR 106 (mild tachycardia)", "Temp 38.4°C (low-grade fever — peritoneal irritation)"],
+            "confidence": 0.80,
+            "key_reasoning_points": [
+                "3-day history = high perforation risk — treat as surgical emergency",
+                "Adolescent female: always exclude ectopic pregnancy (urine bHCG)",
+                "CT abdomen/pelvis is appropriate but do not delay surgical referral",
+            ],
+        },
+    ),
+]
+
+# Merge paediatric cases into main pool and update derived lists
+PATIENTS.extend(PAEDIATRIC_PATIENTS)
+
 PATIENT_MAP = {p["id"]: p for p in PATIENTS}
 EASY_CASES = [p for p in PATIENTS if p["difficulty"] == "easy"]
 MEDIUM_CASES = [p for p in PATIENTS if p["difficulty"] == "medium"]
 HARD_CASES = [p for p in PATIENTS if p["difficulty"] == "hard"]
+PAEDIATRIC_CASES = [p for p in PATIENTS if p.get("age_group") == "paediatric"]
 
 DEPARTMENTS = [
     "Resuscitation", "Emergency", "Cardiology", "Neurology",

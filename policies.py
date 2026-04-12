@@ -63,3 +63,76 @@ class RuleBasedPolicy:
             "routing_decision": "admit" if esi <= 3 else "wait",
             "resource_request": resources
         }
+
+
+class CurriculumPolicy:
+    """
+    Pillar 4.2: Auto-curriculum policy that selects task difficulty based
+    on recent rolling average score.
+
+    Thresholds (configurable):
+      score < 0.65  -> easy
+      0.65-0.78     -> medium
+      > 0.78        -> hard
+
+    Wraps any base policy (LLM agent, rule-based, random) and handles
+    difficulty selection automatically. Pass to rollout_func as the
+    task_id selector.
+
+    Usage:
+        curriculum = CurriculumPolicy(base_policy=RuleBasedPolicy(), window=10)
+        task_id = curriculum.select_task()          # auto-selects difficulty
+        curriculum.record_score(0.82)               # update rolling window
+    """
+
+    def __init__(
+        self,
+        base_policy=None,
+        window: int = 10,
+        thresholds: list = None,
+    ):
+        self.base_policy = base_policy
+        self.window = window
+        self.thresholds = thresholds or [0.65, 0.78]
+        self._score_history: list[float] = []
+        self._task_history: list[str] = []
+
+    def select_task(self) -> str:
+        """Select next task difficulty based on rolling average score."""
+        if len(self._score_history) < 3:
+            return "easy"  # bootstrap on easy until we have enough data
+        avg = sum(self._score_history[-self.window:]) / min(len(self._score_history), self.window)
+        if avg < self.thresholds[0]:
+            return "easy"
+        elif avg < self.thresholds[1]:
+            return "medium"
+        else:
+            return "hard"
+
+    def record_score(self, score: float) -> None:
+        """Record episode score to update rolling window."""
+        self._score_history.append(score)
+
+    def rolling_average(self) -> float:
+        """Return current rolling average over the last `window` episodes."""
+        if not self._score_history:
+            return 0.0
+        recent = self._score_history[-self.window:]
+        return round(sum(recent) / len(recent), 3)
+
+    def act(self, observation: dict) -> dict:
+        """Delegate action to base_policy if provided."""
+        if self.base_policy:
+            return self.base_policy.act(observation)
+        raise ValueError("CurriculumPolicy.act() requires a base_policy. "
+                         "Set base_policy=RuleBasedPolicy() or your LLM agent.")
+
+    def summary(self) -> dict:
+        """Return curriculum progress summary."""
+        return {
+            "episodes_played":  len(self._score_history),
+            "rolling_average":  self.rolling_average(),
+            "current_level":    self.select_task(),
+            "thresholds":       self.thresholds,
+            "recent_scores":    self._score_history[-self.window:],
+        }

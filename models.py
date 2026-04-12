@@ -484,6 +484,24 @@ class TriageObservation(BaseModel):
     feedback: list[str] = Field(default_factory=list)
     hint: Optional[str] = Field(None, description="Clinical hint shown after first failure.")
 
+    # Pillar 2.2 / 2.3: partial observability and nurse handoff fields
+    partial_obs_applied: bool = Field(
+        False,
+        description="True if partial observability mode is active for this episode.",
+    )
+    missing_vitals: list[str] = Field(
+        default_factory=list,
+        description="Vitals marked as not yet measured in partial_obs mode.",
+    )
+    handoff_mode: bool = Field(
+        False,
+        description="True when observation is delivered as a nurse handoff (step 2+).",
+    )
+    nurse_summary: Optional[str] = Field(
+        None,
+        description="Nurse handoff summary replacing direct patient presentation on step 2+.",
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRIAGE REWARD (expanded — multi-objective)
@@ -515,6 +533,39 @@ class TriageReward(BaseModel):
     undertriage_penalty: float = Field(0.0, description="Penalty for sending critical patients to low-acuity areas.")
 
     breakdown: dict = Field(default_factory=dict, description="Full weighted breakdown of all components.")
+
+    # Pillar 3.2: Confidence-calibration bonus
+    calibration_bonus: float = Field(
+        0.0,
+        description=(
+            "Bonus/penalty for reasoning calibration. "
+            "Correct decision + confident reasoning: +0.02. "
+            "Wrong decision + overconfident reasoning: -0.05. "
+            "Computed from action.reasoning length and keyword confidence signals."
+        ),
+    )
+
+    # Pillar 5.2: Safety tier score — ESI-1/2 handling only
+    safety_score: float = Field(
+        1.0,
+        ge=0.0, le=1.0,
+        description=(
+            "Safety tier score (0-1) measuring ESI-1/2 critical case handling. "
+            "Independent of overall accuracy — an agent can score 0.85 overall "
+            "but 0.2 on safety_score if it consistently undertriages critical patients. "
+            "1.0 = no critical undertriage. 0.0 = dangerous undertriage of ESI-1/2 patient."
+        ),
+    )
+
+    # Pillar 3.3: Episode-level outcome label
+    final_outcome: Optional[str] = Field(
+        None,
+        description=(
+            "Episode outcome label: OPTIMAL (correct step 1), ACCEPTABLE (correct within 3 steps), "
+            "DELAYED (correct but 4-6 steps), HARMFUL (undertriage), FATAL (patient died). "
+            "Set when episode ends (done=True)."
+        ),
+    )
 
     class Config:
         json_schema_extra = {
@@ -552,10 +603,30 @@ class TaskConfig(BaseModel):
 
 
 class ResetRequest(BaseModel):
-    task_id: Optional[str] = Field(None, description="easy / medium / hard / random. Random if omitted.")
-    num_patients: int = Field(1, ge=1, le=5, description="Number of patients to generate for this episode (1–5).")
-    use_procedural: bool = Field(False, description="If True, generate patients from condition templates rather than static bank.")
+    task_id: Optional[str] = Field(None, description="easy / medium / hard / mass_casualty / random.")
+    num_patients: int = Field(1, ge=1, le=5, description="Number of patients (1-5).")
+    use_procedural: bool = Field(False, description="If True, use procedural generation instead of static bank.")
     hospital_config: Optional[dict] = Field(None, description="Override default hospital resource counts.")
+
+    # Pillar 4.4: seed-based deterministic evaluation
+    seed: Optional[int] = Field(
+        None,
+        description=(
+            "Optional random seed for fully deterministic episode. "
+            "When set, patient selection and procedural generation use random.seed(seed). "
+            "Eliminates score variance - essential for fair model comparison."
+        ),
+    )
+
+    # Pillar 2.2: partial observability mode
+    partial_obs: bool = Field(
+        False,
+        description=(
+            "If True, enables partial observability: 1-2 vitals randomly marked "
+            "not yet measured, presentation may omit one symptom. "
+            "Trains agents to reason under real ED uncertainty."
+        ),
+    )
 
 
 class StepRequest(BaseModel):

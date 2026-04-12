@@ -24,6 +24,7 @@ from models import (
 )
 from server.patients import (
     PATIENTS, PATIENT_MAP, EASY_CASES, MEDIUM_CASES, HARD_CASES,
+    PAEDIATRIC_CASES,
     DEPARTMENTS, ESI_DESCRIPTIONS,
     CONDITION_TEMPLATES, TEMPLATE_MAP, generate_patient_from_template,
 )
@@ -59,6 +60,16 @@ TASK_CONFIGS = {
         "name": "Subtle & Ambiguous Cases",
         "description": "Complex patients with subtle findings, rare presentations, or misleading combinations.",
         "cases": HARD_CASES,
+    },
+    # Pillar 1.3: Paediatric-specific task
+    "paediatric": {
+        "name": "Paediatric Triage",
+        "description": (
+            "Children aged 0-16 with age-appropriate vital ranges. "
+            "Paediatric normal values differ from adults — HR up to 140 is normal in infants. "
+            "Cases include febrile seizure, epiglottitis, and appendicitis in adolescents."
+        ),
+        "cases": PAEDIATRIC_CASES,
     },
 }
 
@@ -211,13 +222,21 @@ class PatientProgressionEngine:
     def get_state(self, patient_id: str) -> Optional[PatientProgressionState]:
         return self._states.get(patient_id)
 
+    # Pillar 2.1: acuity-proportional delay rates (per step)
+    _ESI_DELAY_RATES = {1: 0.12, 2: 0.08, 3: 0.05, 4: 0.02, 5: 0.01}
+
     def compute_delay_penalty(self, patient_id: str, base_penalty: float = 0.05) -> float:
-        """Penalty that grows with wait time."""
+        """
+        Pillar 2.1: acuity-proportional delay penalty.
+        ESI-1: -0.12/step, ESI-2: -0.08/step, ESI-3: -0.05/step, ESI-4/5: minimal.
+        Capped at 0.40 to avoid runaway penalties on 6-step episodes.
+        """
         state = self._states.get(patient_id)
         if not state:
             return 0.0
-        # Each timestep waited adds to penalty (cap at 0.3)
-        return min(0.30, round(state.timesteps_waited * base_penalty, 3))
+        esi = state.current_esi
+        rate = self._ESI_DELAY_RATES.get(esi, base_penalty)
+        return min(0.40, round(state.timesteps_waited * rate, 3))
 
     def compute_mortality_penalty(self, patient_id: str) -> float:
         """Penalty proportional to accumulated mortality risk."""
@@ -409,6 +428,46 @@ def compute_overtriage_penalty(patient: dict, action: TriageAction) -> tuple[flo
     return round(penalty, 3), feedback
 
 
+def compute_calibration_bonus(action: TriageAction, esi_score: float) -> float:
+    """
+    Pillar 3.2: Confidence-calibration bonus.
+    Correct decisions with clear reasoning get +0.02.
+    Wrong decisions with overconfident language get -0.05.
+    Overconfidence signals: short reasoning (<20 chars) or words like 'obvious', 'clearly', 'definitely'.
+    """
+    reasoning = (action.reasoning or "").strip()
+    is_correct = esi_score >= 0.90
+    is_confident = (
+        len(reasoning) < 20 or
+        any(w in reasoning.lower() for w in ["obvious", "clearly", "definitely", "certainly", "without doubt"])
+    )
+    has_reasoning = len(reasoning) >= 30
+
+    if is_correct and has_reasoning:
+        return 0.02   # rewarded for explaining correct decision
+    elif not is_correct and is_confident:
+        return -0.05  # penalised for overconfident wrong decision
+    return 0.0
+
+
+def compute_safety_score(patient: dict, action: TriageAction, undertriage_penalty: float) -> float:
+    """
+    Pillar 5.2: Safety tier score — only meaningful for ESI-1/2 patients.
+    For non-critical patients always returns 1.0 (no safety concern).
+    For ESI-1/2 patients: 1.0 if correctly triaged, degrades proportionally to undertriage severity.
+    """
+    correct_esi = patient.get("correct_esi", 3)
+    if correct_esi >= 3:
+        return 1.0  # not a critical patient — safety score not applicable
+    if undertriage_penalty >= 0.35:
+        return 0.01  # dangerous undertriage of critical patient
+    elif undertriage_penalty >= 0.15:
+        return 0.40  # moderate undertriage
+    elif action.esi_level <= 2:
+        return 1.0   # correctly identified as critical
+    return 0.70      # partial credit
+
+
 def score_triage_v3(
     patient: dict,
     action: TriageAction,
@@ -416,7 +475,7 @@ def score_triage_v3(
     progression_engine: PatientProgressionEngine,
 ) -> tuple[float, TriageReward, list[str]]:
     """
-    Full multi-objective scoring function for V3.
+    Full multi-objective scoring function for V4 (reward formula upgrade).
     """
     # 1. Clinical accuracy (ESI + department)
     esi_score, undertriage_penalty, esi_feedback = compute_esi_score(patient, action.esi_level)
@@ -434,7 +493,13 @@ def score_triage_v3(
     delay_penalty = progression_engine.compute_delay_penalty(patient_id)
     mortality_penalty = progression_engine.compute_mortality_penalty(patient_id)
 
-    # 5. Compose reward
+    # 5. Pillar 3.2: Confidence-calibration bonus
+    calibration_bonus = compute_calibration_bonus(action, esi_score)
+
+    # 6. Pillar 5.2: Safety tier score
+    safety_score = compute_safety_score(patient, action, undertriage_penalty)
+
+    # 7. Compose reward (V4 formula)
     total = (
         REWARD_WEIGHTS["accuracy"] * accuracy_score
         + REWARD_WEIGHTS["resource"] * resource_score
@@ -442,6 +507,7 @@ def score_triage_v3(
         - REWARD_WEIGHTS["mortality"] * mortality_penalty
         - overtriage_penalty
         - undertriage_penalty
+        + calibration_bonus
     )
     total = max(0.01, min(0.99, round(total, 3)))
 
@@ -454,6 +520,8 @@ def score_triage_v3(
         mortality_penalty=mortality_penalty,
         overtriage_penalty=overtriage_penalty,
         undertriage_penalty=undertriage_penalty,
+        calibration_bonus=calibration_bonus,
+        safety_score=safety_score,
         breakdown={
             "accuracy_component": round(REWARD_WEIGHTS["accuracy"] * accuracy_score, 3),
             "resource_component": round(REWARD_WEIGHTS["resource"] * resource_score, 3),
@@ -461,6 +529,8 @@ def score_triage_v3(
             "mortality_penalty": -round(REWARD_WEIGHTS["mortality"] * mortality_penalty, 3),
             "overtriage_penalty": -overtriage_penalty,
             "undertriage_penalty": -undertriage_penalty,
+            "calibration_bonus": calibration_bonus,
+            "safety_score": safety_score,
         },
     )
 
@@ -502,11 +572,20 @@ class MedicalTriageEnvironment(OpenEnvBase):
         self.current_patient: Optional[dict] = None
         self.current_task_id: Optional[str] = None
         self.step_count: int = 0
-        self.max_steps: int = 3
+        self.max_steps: int = 6          # Pillar 2.1: extended to 6 steps
         self.done: bool = False
         self.best_score: float = 0.0
         self.history: list[dict] = []
         self.start_time: float = time.time()
+
+        # Pillar 2.2 / 2.3: partial observability and nurse handoff state
+        self.partial_obs: bool = False
+        self.missing_vitals: list[str] = []
+        self.seed: Optional[int] = None
+
+        # Pillar 3.3 / 5: outcome tracking and audit log
+        self.final_outcome: Optional[str] = None
+        self._audit_log: list[dict] = []   # persists across episodes
 
         # V3 modules
         self.resource_manager: Optional[HospitalResourceManager] = None
@@ -524,12 +603,29 @@ class MedicalTriageEnvironment(OpenEnvBase):
             hospital_config = request.hospital_config
             use_procedural = request.use_procedural
 
+            # Pillar 4.4: seed-based deterministic evaluation
+            self.seed = request.seed
+            if self.seed is not None:
+                random.seed(self.seed)
+
+            # Pillar 2.2: partial observability mode
+            self.partial_obs = getattr(request, "partial_obs", False)
+        else:
+            self.seed = None
+            self.partial_obs = False
+
         self.episode_id = str(uuid.uuid4())
         self.step_count = 0
         self.done = False
         self.best_score = 0.0
         self.history = []
+        self.missing_vitals = []
+        self.final_outcome = None
         self.start_time = time.time()
+
+        # Pillar 2.1: extended episode horizon
+        # mass_casualty keeps 3 steps (5 patients); all others get 6 steps
+        self.max_steps = 3 if task_id == "mass_casualty" else 6
 
         # Resolve task
         if task_id and task_id in TASK_CONFIGS:
@@ -537,18 +633,20 @@ class MedicalTriageEnvironment(OpenEnvBase):
         else:
             self.current_task_id = random.choice(["easy", "medium", "hard"])
 
-        # Select patient.
-        # V5 fix: hard tasks ALWAYS use curated cases regardless of use_procedural.
-        # Procedural generation draws from templates that may not capture the subtle
-        # clinical nuances (lucid interval, BP arm differential, etc.) that make hard
-        # cases genuinely challenging. Forcing curated cases for hard preserves the
-        # intended 0.55–0.80 difficulty variance. Easy/medium can use procedural
-        # generation for additional variety.
+        # Select patient — hard tasks always use curated cases (V5 fix preserved)
         if use_procedural and self.current_task_id != "hard":
             self.current_patient = self.procedural_gen.generate(self.current_task_id)
         else:
             cases = TASK_CONFIGS[self.current_task_id]["cases"]
             self.current_patient = copy.deepcopy(random.choice(cases))
+
+        # Pillar 2.2: apply partial observability — hide 1-2 vitals randomly
+        if self.partial_obs:
+            hideable = ["rr", "temp", "o2_sat", "hr"]
+            n_hide = random.randint(1, 2)
+            self.missing_vitals = random.sample(hideable, n_hide)
+        else:
+            self.missing_vitals = []
 
         # Initialise modules
         self.resource_manager = HospitalResourceManager(hospital_config)
@@ -646,6 +744,61 @@ class MedicalTriageEnvironment(OpenEnvBase):
             feedback=feedback,
         )
 
+        # Pillar 5.1: Failure mode classifier
+        failure_mode = self._classify_failure(patient, action, reward, total_score)
+
+        # Pillar 3.3: Episode-level outcome label (set when episode ends)
+        if self.done:
+            prog_state = self.progression_engine.get_state(patient["id"])
+            is_fatal = prog_state and prog_state.is_deceased
+            if is_fatal:
+                self.final_outcome = "FATAL"
+            elif reward.undertriage_penalty >= 0.35:
+                self.final_outcome = "HARMFUL"
+            elif self.best_score >= 0.75 and self.step_count == 1:
+                self.final_outcome = "OPTIMAL"
+            elif self.best_score >= 0.75 and self.step_count <= 3:
+                self.final_outcome = "ACCEPTABLE"
+            elif self.best_score >= 0.75:
+                self.final_outcome = "DELAYED"
+            else:
+                self.final_outcome = "HARMFUL"
+
+            # Propagate final_outcome into reward
+            reward.final_outcome = self.final_outcome
+
+        # Pillar 5.3: Audit log entry
+        audit_entry = {
+            "episode_id": self.episode_id,
+            "task_id": self.current_task_id,
+            "patient_id": patient["id"],
+            "difficulty": patient["difficulty"],
+            "step": self.step_count,
+            "action": {
+                "esi_level": action.esi_level,
+                "department": action.department,
+                "routing_decision": action.routing_decision,
+                "reasoning": (action.reasoning or "")[:200],
+            },
+            "scores": {
+                "total": total_score,
+                "esi": reward.esi_score,
+                "dept": reward.department_score,
+                "resource": reward.resource_score,
+                "safety": reward.safety_score,
+                "calibration_bonus": reward.calibration_bonus,
+            },
+            "failure_mode": failure_mode,
+            "final_outcome": self.final_outcome,
+            "correct_esi": patient["correct_esi"],
+            "correct_dept": patient["correct_department"],
+            "done": self.done,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        self._audit_log.append(audit_entry)
+        if len(self._audit_log) > 200:   # keep last 200 entries in memory
+            self._audit_log = self._audit_log[-200:]
+
         info = {
             "step": self.step_count,
             "best_score": self.best_score,
@@ -654,9 +807,36 @@ class MedicalTriageEnvironment(OpenEnvBase):
             "correct_esi": patient["correct_esi"],
             "correct_dept": patient["correct_department"],
             "hospital_state": self.resource_manager.snapshot().model_dump(),
+            "failure_mode": failure_mode,
+            "final_outcome": self.final_outcome,
+            "safety_score": reward.safety_score,
         }
 
         return obs, reward, self.done, info
+
+    def _classify_failure(
+        self, patient: dict, action: TriageAction, reward: "TriageReward", total_score: float
+    ) -> str:
+        """Pillar 5.1: Classify the primary failure mode for this step."""
+        correct_esi = patient.get("correct_esi", 3)
+        correct_dept = patient.get("correct_department", "")
+
+        if reward.undertriage_penalty >= 0.35:
+            return "UNDERTRIAGE_CRITICAL"
+        elif reward.undertriage_penalty >= 0.15:
+            return "UNDERTRIAGE_MODERATE"
+        elif reward.overtriage_penalty >= 0.15:
+            return "OVERTRIAGE"
+        elif action.department.lower() != correct_dept.lower() and reward.esi_score >= 0.90:
+            return "DEPARTMENT_MISMATCH"
+        elif reward.resource_score < 0.50:
+            return "RESOURCE_WASTE"
+        elif reward.delay_penalty >= 0.20:
+            return "DELAY_EXCESSIVE"
+        elif total_score >= 0.75:
+            return "CORRECT"
+        else:
+            return "PARTIAL"
 
     def get_tasks(self) -> list[TaskConfig]:
         return [
@@ -732,6 +912,26 @@ class MedicalTriageEnvironment(OpenEnvBase):
         current_vitals = prog_state.current_vitals if prog_state else patient["vitals"]
         current_esi = prog_state.current_esi if prog_state else patient["correct_esi"]
 
+        # Pillar 2.2: apply partial observability — mask hidden vitals
+        display_vitals = dict(current_vitals)
+        if self.partial_obs and self.missing_vitals:
+            for v in self.missing_vitals:
+                if v in display_vitals:
+                    display_vitals[v] = "not yet measured"
+
+        # Pillar 2.3: nurse handoff format on step 2+ when partial_obs is active
+        handoff_mode = False
+        nurse_summary = None
+        if self.partial_obs and self.step_count >= 2:
+            handoff_mode = True
+            measured = {k: v for k, v in display_vitals.items() if v != "not yet measured"}
+            vital_str = ", ".join(f"{k.upper()} {v}" for k, v in measured.items())
+            nurse_summary = (
+                f"Charge nurse reports: {patient['presentation'][:120]}... "
+                f"Measured vitals: {vital_str}. "
+                f"Note: {', '.join(self.missing_vitals)} not yet obtained — patient arrived without prior workup."
+            )
+
         return TriageObservation(
             episode_id=self.episode_id,
             task_id=self.current_task_id,
@@ -742,7 +942,7 @@ class MedicalTriageEnvironment(OpenEnvBase):
             message=message,
             patient_id=patient["id"],
             presentation=patient["presentation"],
-            vitals=current_vitals,
+            vitals=display_vitals,
             initial_vitals=prog_state.initial_vitals if prog_state else patient["vitals"],
             timesteps_waited=prog_state.timesteps_waited if prog_state else 0,
             consciousness_score=prog_state.consciousness_score if prog_state else 1.0,
@@ -762,5 +962,9 @@ class MedicalTriageEnvironment(OpenEnvBase):
             best_score_so_far=self.best_score,
             feedback=feedback,
             hint=hint,
+            partial_obs_applied=self.partial_obs,
+            missing_vitals=self.missing_vitals,
+            handoff_mode=handoff_mode,
+            nurse_summary=nurse_summary,
         )
 score_triage = score_triage_v3

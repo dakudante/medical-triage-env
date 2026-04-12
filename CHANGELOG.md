@@ -1,3 +1,111 @@
+## V7 (current)
+
+### Pillar 1.3 — Paediatric sub-pool (NEW)
+- `PAEDIATRIC_CASES` list added to `patients.py` — 3 curated cases: febrile seizure
+  (easy, ESI-2), epiglottitis (medium, ESI-1), appendicitis in adolescent (hard, ESI-2)
+- `age_group` field added to all patients via `_static()` — auto-detected from
+  presentation text; values: `paediatric` (0-16), `adult` (17-64), `elderly` (65+)
+- `paediatric` task added to `TASK_CONFIGS` and exposed via `GET /tasks`
+- Paediatric vital context in presentations — HR up to 140 normal in infants,
+  weight-based drug dosing noted, paediatric-specific differentials in XAI
+
+### Pillar 2 — Partial observability & multi-turn realism (COMPLETE)
+- 2.1: max_steps 3 → 6, acuity-proportional delay rates
+- 2.2: partial_obs mode — 1-2 vitals hidden as "not yet measured"
+- 2.3: nurse handoff format on step 2+ when partial_obs is active
+
+### Pillar 3 — Reward function V4 (COMPLETE)
+- 3.1: Acuity-proportional delay rates wired via `_ESI_DELAY_RATES` dict
+- 3.2: `compute_calibration_bonus()` — +0.02 for correct + reasoned decisions,
+  -0.05 for overconfident wrong decisions; added to `TriageReward.calibration_bonus`
+- 3.3: `final_outcome` label set when `done=True`:
+  OPTIMAL / ACCEPTABLE / DELAYED / HARMFUL / FATAL
+
+### Pillar 4 — Training infrastructure (COMPLETE)
+- 4.1: POST /rollout_batch — parallel asyncio.gather resets
+- 4.2: CurriculumPolicy in policies.py
+- 4.3: GET /leaderboard + POST /leaderboard/submit
+- 4.4: seed: Optional[int] in ResetRequest for deterministic episodes
+
+### Pillar 5 — Safety analysis & explainability (COMPLETE)
+- 5.1: `_classify_failure()` in environment — tags each step:
+  UNDERTRIAGE_CRITICAL / UNDERTRIAGE_MODERATE / OVERTRIAGE / DEPARTMENT_MISMATCH /
+  RESOURCE_WASTE / DELAY_EXCESSIVE / CORRECT / PARTIAL
+  Returned in `info["failure_mode"]` on every step
+- 5.2: `compute_safety_score()` — separate 0-1 metric for ESI-1/2 handling only.
+  Added to `TriageReward.safety_score`. An agent scoring 0.85 overall can score
+  0.01 on safety_score if it dangerously undertriages a critical patient
+- 5.3: Per-episode audit log — every step writes a structured JSON entry to
+  `_audit_log` (max 200 in memory). `GET /audit` returns last 50 entries with
+  failure_mode_summary and outcome_summary aggregates
+
+### Bug Fixes (from V7 initial)
+- Fixed `generate_patient_from_template()` KeyError on `{temp}`, `{rr}`, `{bp_dia}`
+  in 6 new condition template reasoning strings
+
+## V7 (current)
+
+### New Features — Pillar 2: Partial observability & multi-turn realism
+
+**2.1 Extended episode horizon (3 → 6 steps)**
+- `MedicalTriageEnvironment.max_steps` raised from 3 to 6 for all tasks
+  (mass_casualty keeps 3 steps — 5 simultaneous patients is already demanding)
+- Delay penalty is now acuity-proportional:
+  ESI-1: −0.12/step · ESI-2: −0.08 · ESI-3: −0.05 · ESI-4: −0.02 · ESI-5: −0.01
+  Cap raised from 0.30 to 0.40 to accommodate longer episodes
+- Forces agents to commit early while rewarding fast correct decisions
+
+**2.2 Partial observability mode**
+- `ResetRequest`: new `partial_obs: bool = False` field
+- When enabled: 1–2 vitals randomly set to `"not yet measured"` in the observation
+- `TriageObservation`: new `partial_obs_applied: bool` and `missing_vitals: list[str]` fields
+- Trains agents to reason under real ED uncertainty (patients often arrive without full workup)
+
+**2.3 Nurse handoff observation format**
+- On step 2+ when `partial_obs=True`, observation shifts to nurse handoff perspective
+- `TriageObservation`: new `handoff_mode: bool` and `nurse_summary: str` fields
+- Nurse summary: "Charge nurse reports: [presentation excerpt]... Measured vitals: [available]. Note: [missing] not yet obtained."
+- Tests whether agents can integrate second-hand clinical information
+
+### New Features — Pillar 4: Training infrastructure & RL pipeline
+
+**4.1 Parallel batch rollout endpoint**
+- New `POST /rollout_batch` endpoint — runs up to 16 simultaneous fresh resets via `asyncio.gather`
+- Body: `{task_id, n_episodes, use_procedural, partial_obs, seed}`
+- Returns list of episode observations ready for GRPO training batch collection
+- Eliminates need to run N sequential WebSocket connections for batch training
+
+**4.2 Curriculum learning policy**
+- `CurriculumPolicy` class added to `policies.py`
+- Auto-selects task difficulty from rolling average score (window=10, configurable)
+- Thresholds: score < 0.65 → easy · 0.65–0.78 → medium · > 0.78 → hard
+- Methods: `select_task()`, `record_score(score)`, `rolling_average()`, `summary()`
+- Wraps any base policy (RuleBasedPolicy, LLM agent, RandomPolicy)
+
+**4.3 In-memory leaderboard**
+- `GET /leaderboard` — returns top 10 runs sorted by average score
+- `POST /leaderboard/submit` — accepts `{agent_name, easy_score, medium_score, hard_score}`, returns rank
+- Enables community model benchmarking without external infrastructure
+- Resets on server restart (note documented in endpoint response)
+
+**4.4 Seed-based deterministic evaluation**
+- `ResetRequest`: new `seed: Optional[int] = None` field
+- When set: `random.seed(seed)` applied before patient selection and procedural generation
+- Fully reproducible episodes — eliminates ±0.05 score variance
+- Supported in both HTTP (`/reset`) and WebSocket (`{"type":"reset","seed":42}`) transports
+- Per-episode seeds via `/rollout_batch`: `base_seed + episode_index`
+
+### Bug Fixes
+- **CRITICAL — procedural generation crash** (`generate_patient_from_template`):
+  6 new V6.5 templates used `{temp}`, `{rr}`, `{bp_dia}` in `reasoning_template`
+  but `.format()` only received `age, sex, hr, o2, bp_sys`. Fixed by passing all
+  8 vitals variables. Affected: `sepsis`, `serotonin_syndrome`, `anaphylaxis`,
+  `dka`, `heat_stroke`, `post_op_complication`.
+
+### Version
+- `pyproject.toml`: 6.0.0 → 7.0.0
+- `inference.py`: version log updated to V7
+
 # Medical Triage OpenEnv — CHANGELOG
 
 ## V7 (current)
