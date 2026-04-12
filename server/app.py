@@ -1,13 +1,6 @@
 """
-FastAPI server for the Medical Triage OpenEnv environment — V6.
+FastAPI server for the Medical Triage OpenEnv environment — final submission.
 Endpoints: POST /reset, POST /step, GET /state, GET /tasks, POST /grader, GET /baseline
-
-V6 changes:
-  - environment.py replaces triage_environment.py (OpenEnv spec compliance)
-  - All HTTP endpoints are now async (Fix 7)
-  - /state returns richer metadata for score variance tracking (Fix 13)
-  - Mass casualty task wired through ResetRequest hospital_config (Fix 8)
-  - Per-connection env isolation retained from V5 (race-condition fix)
 """
 
 import os
@@ -30,14 +23,14 @@ from .patients import PATIENT_MAP, DEPARTMENTS
 from .environment import MedicalTriageEnvironment, score_triage
 
 app = FastAPI(
-    title="Medical Triage — OpenEnv V6",
+    title="Medical Triage — OpenEnv",
     description=(
         "An OpenEnv-compliant RL environment where AI agents learn to triage patients "
         "using the Emergency Severity Index (ESI). Agents assess patient presentations, "
         "assign ESI levels (1–5), recommend departments, and allocate hospital resources. "
-        "Graders use a multi-objective V3 reward formula with asymmetric undertriage penalties."
+        "Graders use a multi-objective V4 reward formula with asymmetric undertriage penalties."
     ),
-    version="6.0.0",
+    version="1.0.0",
 )
 
 app.add_middleware(
@@ -73,7 +66,7 @@ MASS_CASUALTY_CONFIG = {
 async def root():
     return {
         "name": "Medical Triage OpenEnv",
-        "version": "6.0.0",
+        "version": "1.0.0",
         "description": "RL environment for ESI-based medical triage.",
         "endpoints": ["/reset", "/step", "/state", "/tasks", "/grader", "/baseline"],
         "esi_scale": {
@@ -87,9 +80,9 @@ async def root():
 @app.post("/reset", response_model=ResetResponse)
 async def reset(request: ResetRequest = None):
     """
-    Start a new episode. Pass task_id: easy | medium | hard | mass_casualty.
+    Start a new episode. Pass task_id: easy | medium | hard | mass_casualty | paediatric.
 
-    V6: mass_casualty task spawns 5 patients with reduced hospital capacity
+    mass_casualty spawns 5 simultaneous patients with reduced hospital capacity
     (2 ICU beds, 4 ER beds, 2 doctors). Tests prioritisation under resource pressure.
     use_procedural defaults to False. Hard tasks always use curated cases.
     """
@@ -131,7 +124,7 @@ async def state():
 
 @app.get("/tasks")
 async def get_tasks():
-    """List all tasks with action schema. Includes mass_casualty task (V6)."""
+    """List all tasks with action schema."""
     base_tasks = [t.model_dump() for t in _http_env.get_tasks()]
 
     # Append mass_casualty task definition
@@ -243,7 +236,7 @@ async def baseline():
 
     return {
         "agent":         "rule_based_baseline",
-        "version":       "V6",
+        "version":       "1.0.0",
         "average_score": round(total / len(results), 3),
         "task_scores":   results,
         "note": (

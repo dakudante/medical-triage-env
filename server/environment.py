@@ -562,7 +562,7 @@ except ImportError:
 
 class MedicalTriageEnvironment(OpenEnvBase):
     """
-    V6 Medical Triage Environment — OpenEnv compliant.
+    Medical Triage Environment — OpenEnv compliant.
     Inherits from openenv.core.Environment (with graceful fallback).
     Integrates ResourceManager, ProgressionEngine, XAIEngine, and ProceduralGenerator.
     """

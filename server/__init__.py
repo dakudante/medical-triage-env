@@ -1,4 +1,4 @@
-# Medical Triage OpenEnv — Server Package V7
+# Medical Triage OpenEnv — Server Package
 from .environment import MedicalTriageEnvironment, score_triage
 from .patients import (
     PATIENTS, PATIENT_MAP, DEPARTMENTS, ESI_DESCRIPTIONS,

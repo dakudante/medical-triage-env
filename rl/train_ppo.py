@@ -155,7 +155,7 @@ def save_checkpoint(output_dir: Path, policy: TriagePolicyNet, extractor: Observ
         "departments": policy.departments,
         "feature_dim": extractor.feature_dim,
         "metrics": metrics,
-        "version": "7.1.0",
+        "version": "1.0.0",
     }, path)
     return path
 

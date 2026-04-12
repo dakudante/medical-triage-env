@@ -406,7 +406,7 @@ async def main():
     t0     = time.time()
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    print(f"[INFO] version=V7 env={ENV_WS_URL} model={MODEL_NAME}", flush=True)
+    print(f"[INFO] version=1.0.0 env={ENV_WS_URL} model={MODEL_NAME}", flush=True)
 
     scores = []
     for task_id in TASK_IDS:

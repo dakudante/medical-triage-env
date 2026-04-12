@@ -1,5 +1,5 @@
 name: medical-triage-env
-version: "8.0.0"
+version: "1.0.0"
 description: >
   An OpenEnv environment where AI agents learn emergency medical triage using the
   Emergency Severity Index (ESI). Agents assess patient presentations, assign ESI
@@ -274,9 +274,9 @@ reward:
 
 limitations:
   patient_pool: >
-    Current pool: 18 curated cases (6 easy / 6 medium / 6 hard).
+    Current pool: 57 curated cases (19 easy / 19 medium / 19 hard + 8 paediatric).
     Procedural generation available via use_procedural=true for easy/medium tasks.
-    V6 roadmap: expand to 50+ cases with richer procedural templates.
+    Future roadmap: expand to 100+ cases with richer procedural templates.
   generalisation: >
     Agents trained here should be validated on real clinical data before
     any deployment consideration. This is a research/training environment.
